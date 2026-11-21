@@ -67,7 +67,7 @@
 
 ## 每日总统简报
 
-面板内的米纸文档块（同时提供 `GET /api/brief`）：头条研判、地区动态（北美/欧洲/亚太/中东各一）、冲突与安全、市场风向（Polymarket 概率 + 经济桌）、小道消息（未证实）、明日关注（话题命中数与上轮快照对比的升温话题）。
+米纸文档以**弹窗**形式呈报（同时提供 `GET /api/brief`）：页面流中是一条「简报档案」入口条（标题 + 日期 + 头条预告 + 金色「开启简报」钮），点击入口条、右下角悬浮 📜 钮或导航均打开弹窗——深蓝遮罩 + 金色双线框，纸面在框内滚动，「✕ 封存」钮 / 点遮罩 / Esc 三路关闭。内容：头条研判、地区动态（北美/欧洲/亚太/中东各一）、冲突与安全、市场风向（Polymarket 概率 + 经济桌）、小道消息（未证实）、明日关注（话题命中数与上轮快照对比的升温话题）。
 
 Telegram：配置 `TG_BOT_TOKEN` + `TG_CHAT_ID` 后，每天 CST 08:00 后首轮巡检把简报文本推到私聊（仅 DM 一个目标，按天门禁，失败当天后续巡检重试）。手动推送 `POST /api/brief/push` 需 `PUSH_KEY`（请求头 `x-push-key`）：未配密钥 403 关闭、错钥匙 401、按目标 6 小时节流。
 
@@ -114,4 +114,4 @@ KV 键：`osint:items`（条目，≤400 条/48h）、`osint:meta`、`osint:topi
 
 ## 本地测试
 
-`/tmp/osint-harness.mjs`（Mock KV/fetch/caches + 全部来源夹具）：**79 项断言全过**，覆盖 RSS/Atom 双风格解析、实体解码、URL+标题双去重、同 URL 多源折叠保留高层级、desk/region 分类（含 cyber→安全、Bellingcat 默认桌、Lobsters flex 改道）、评分排序、Reddit 429 与 Bluesky 403 的优雅降级、4chan 置顶/关闭跳过与卫生过滤、Polymarket 概率解析、USGS 事件、简报全节组装与小道未证实标记、话题升温（双轮对比）、巡检节流、PUSH_KEY 门禁（403/401/成功/节流）、每日推送按天门禁、缓存 MISS→HIT 与巡检后失效。双语版新增 Phase D 28 项断言：默认 zh 渲染与金印切换器中文段激活、纸面反色切换器、?lang=en 全英文界面（六桌与简报分节英文名齐全、12 个中文界面词零残留）、Cookie 回写（30 天）与缓存副本无 Set-Cookie、en 缓存 MISS→HIT 且 zh 键独立、巡检后双语缓存一并失效、仅 Cookie / Accept-Language 亦可命中英文、非法 ?lang=fr 回退 zh、/api/brief?lang=en 标签本地化而 TG 推送文案恒中文——合计 **107 项断言全过**。
+`/tmp/osint-harness.mjs`（Mock KV/fetch/caches + 全部来源夹具）：**79 项断言全过**，覆盖 RSS/Atom 双风格解析、实体解码、URL+标题双去重、同 URL 多源折叠保留高层级、desk/region 分类（含 cyber→安全、Bellingcat 默认桌、Lobsters flex 改道）、评分排序、Reddit 429 与 Bluesky 403 的优雅降级、4chan 置顶/关闭跳过与卫生过滤、Polymarket 概率解析、USGS 事件、简报全节组装与小道未证实标记、话题升温（双轮对比）、巡检节流、PUSH_KEY 门禁（403/401/成功/节流）、每日推送按天门禁、缓存 MISS→HIT 与巡检后失效。双语版新增 Phase D 28 项断言：默认 zh 渲染与金印切换器中文段激活、纸面反色切换器、?lang=en 全英文界面（六桌与简报分节英文名齐全、12 个中文界面词零残留）、Cookie 回写（30 天）与缓存副本无 Set-Cookie、en 缓存 MISS→HIT 且 zh 键独立、巡检后双语缓存一并失效、仅 Cookie / Accept-Language 亦可命中英文、非法 ?lang=fr 回退 zh、/api/brief?lang=en 标签本地化而 TG 推送文案恒中文。v1.1.0 新增 Phase E 18 项断言：简报弹窗结构与页面流位置（入口条在六桌之前、纸面恰一份且位于弹窗容器内、悬浮钮改开弹窗、Esc/遮罩关闭逻辑在位、en 弹窗字符串本地化）、摘要清洗（实体编码的 Google News 列表摘要入库后无 `<`/`href`/`CBM` 残留且保留锚文本、未闭合标签残骸整段丢弃）、预置脏数据渲染兜底（种 KV 的脏摘要在卡片/头条/简报/搜索索引中均不外露）——合计 **125 项断言全过**。
