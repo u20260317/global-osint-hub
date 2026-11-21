@@ -141,16 +141,45 @@ return String(s?? "")
 .replace(/&#(\d+);/g, (_, d) => { try { return String.fromCodePoint(parseInt(d, 10));} catch { return " ";}})
 .replace(/&([a-zA-Z]+);/g, (m, name) => (NAMED_ENTITIES[name]!= null? NAMED_ENTITIES[name]: m));
 }
-// 清洗：<br> 先转成换行（4chan 首行标题与 RSS 段落都靠它），再剥标签、解实体、折叠空白
+// 清洗：<br> 先转成换行（4chan 首行标题与 RSS 段落都靠它），再剥标签、解实体、折叠空白。
+// 关键一步是「解实体后二次剥标签」：聚合源（如 Google News）的摘要常把 HTML 实体编码
+// （&lt;ol&gt;&lt;li&gt;&lt;a href=…&gt;），首轮剥离对它无效，解码后会还原成真实标签，
+// 若不再剥一次就会以原文形态显示在页面上（线上实测过的摘要乱码 bug）。
 function cleanText(s, maxLen) {
 let t = String(s?? "");
 t = t.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
 t = t.replace(/<br\s*\/?>/gi, "\n");
 t = t.replace(/<[^>]+>/g, " ");
 t = decodeEntities(t);
+t = t.replace(/<[^>]+>/g, " ");
 t = t.replace(/[ \t\r\f\v]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
-if (maxLen && t.length > maxLen) t = t.slice(0, maxLen).trim();
+if (maxLen && t.length > maxLen) t = truncateAtBoundary(t, maxLen);
 return t;
+}
+// 截断优先落在句末，其次词界，避免半词/半句（找不到合适落点才硬切）
+function truncateAtBoundary(t, maxLen) {
+const cut = t.slice(0, maxLen);
+const min = Math.floor(maxLen * 0.5);
+const sent = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("！"), cut.lastIndexOf("？"), cut.lastIndexOf("；"), cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("; "));
+if (sent >= min) return cut.slice(0, sent + 1).trim();
+const sp = cut.lastIndexOf(" ");
+if (sp >= min) return cut.slice(0, sp).trim();
+return cut.trim();
+}
+// 摘要残骸判定：清洗后仍含 href 属性 / CBM 令牌（Google News 文章 ID）/ 裸 URL 的，
+// 多为聚合源「相关标题链接列表」的残渣，整段丢弃胜过展示乱码
+function looksLikeLinkJunk(t) {
+return /href\s*=/i.test(t) || /CBM[0-9A-Za-z_-]{6,}/.test(t) || /https?:\/\/|www\./i.test(t);
+}
+// 摘要清洗（抓取入库用）：全量清洗 + 残骸丢弃
+function cleanSummary(s, maxLen) {
+const t = cleanText(s, maxLen || 140);
+return t && !looksLikeLinkJunk(t) ? t : "";
+}
+// 渲染层兜底：已入库的脏摘要同样不外露——清洗后仍含 < / href / CBM 残骸则整段不渲染
+function safeSummary(s) {
+const t = cleanText(s || "", 0);
+return t && !t.includes("<") && !looksLikeLinkJunk(t) ? t : "";
 }
 function firstLine(s, maxLen) {
 const line = String(s || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || "";
@@ -234,7 +263,7 @@ dateStr = xmlTag(b, "pubDate") || xmlTag(b, "dc:date") || xmlTag(b, "date");
 desc = xmlTag(b, "description") || xmlTag(b, "content:encoded");
 }
 if (!title ||!link) continue;
-out.push({ title, url: decodeEntities(link).trim(), ts: parseDateLoose(dateStr), snippet: cleanText(desc, 140)});
+out.push({ title, url: decodeEntities(link).trim(), ts: parseDateLoose(dateStr), snippet: cleanSummary(desc, 140)});
 }
 return out;
 }
@@ -268,7 +297,7 @@ source: raw.source,
 sourceKey: raw.sourceKey,
 tier: raw.tier || 3,
 ts,
-snippet: String(raw.snippet || "").slice(0, 140),
+snippet: cleanSummary(raw.snippet || "", 140), // 全来源统一摘要清洗（含残骸丢弃），脏摘要不入库
 lang: raw.lang || "",
 kind: raw.kind || "news", // news | social | market
 social: raw.social || 0, // 社交热度原始值（HN points / 4chan replies）
@@ -545,8 +574,8 @@ if (!it) return null;
 return {
 title: it.title, url: it.url, source: it.source, ts: it.ts, score: it.score,
 region: it.region, desk: it.desk, unverified:!!it.unverified,
-summary: firstSentence(it.snippet, 120) || it.title,
-snippet: it.snippet || "",
+summary: firstSentence(safeSummary(it.snippet), 120) || it.title,
+snippet: safeSummary(it.snippet),
 };
 }
 function buildBrief(items, topicsState, meta) {
@@ -877,6 +906,7 @@ paperFoot: "本简报由公开来源经规则自动聚合生成（非 AI 生成�
 empty1: "暂无数据 · 等待首轮巡检", empty2: "NO DATA — AWAITING FIRST SWEEP",
 footerMain: "本站为公开来源自动聚合，研判由规则生成、非 AI 生成、非官方立场；小道消息未经证实，请以原文与官方发布为准。",
 fabBrief: "📜 总统简报",
+stripOpen: "开启简报 · OPEN", stripClose: "✕ 封存 CLOSE", stripEmpty: "暂无头条 · 等待首轮巡检",
 jsSweeping: "巡检中…（约需数秒）", jsThrottled: "已节流：距上次巡检不足 30 分钟，请稍后再试", jsDone: "巡检完成，正在刷新…", jsFailed: "巡检请求失败，请稍后重试",
 methodLabel: "规则聚合",
 blurbCommunity: "本桌汇集 HN、Reddit、Lobsters、Lemmy、Mastodon、Bluesky 与 4chan 等社区来源：其中 4chan 为匿名社区、内容未经证实，其余社区帖文亦属用户生成内容，仅供研判参考，请交叉验证。",
@@ -907,6 +937,7 @@ paperFoot: "This brief is assembled automatically from public sources by rules (
 empty1: "NO DATA — AWAITING FIRST SWEEP", empty2: "暂无数据 · 等待首轮巡检",
 footerMain: "Automatically aggregated from public sources. Assessments are rules-generated — not AI-generated and not an official position. Chatter is unverified; consult originals and official releases.",
 fabBrief: "📜 Daily Brief",
+stripOpen: "OPEN THE BRIEF", stripClose: "✕ SEAL · CLOSE", stripEmpty: "No headline yet — awaiting the first sweep",
 jsSweeping: "Sweeping… (a few seconds)", jsThrottled: "Throttled: the last sweep was under 30 minutes ago — please try again later", jsDone: "Sweep complete — reloading…", jsFailed: "Sweep request failed — please try again later",
 methodLabel: "Rules-aggregated",
 blurbCommunity: "Community sources — HN, Reddit, Lobsters, Lemmy, Mastodon, Bluesky and 4chan. 4chan is an anonymous board and its content is unverified; all community posts are user-generated. Treat as leads for assessment and cross-check before citing.",
@@ -1089,6 +1120,23 @@ footer{margin-top:56px;text-align:center;color:#8d8163;font-size:12.5px;line-hei
 .lang-toggle.paper .lt-stud{background:#f7f1de;border-color:#14264e;color:#7a1f2b;box-shadow:0 2px 8px rgba(27,39,69,.25)}
 @media (max-width:640px){.paper{padding:26px 20px}.cards{grid-template-columns:1fr}}
 @media (max-width:640px){.mast-tools{justify-content:center}.paper-tools{justify-content:center}}
+.brief-strip{display:flex;align-items:center;justify-content:space-between;gap:18px;max-width:900px;margin:36px auto 6px;padding:16px 22px;background:linear-gradient(180deg,#0e2142,#0a1830);border:1px solid rgba(201,162,39,.55);border-top:3px double #c9a227;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.bs-title{font-family:Georgia,"Times New Roman","Songti SC","SimSun",serif;font-size:15.5px;letter-spacing:.16em;color:#f7f1de}
+.bs-teaser{color:#b9ac8d;font-size:13px;margin-top:5px;letter-spacing:.04em;line-height:1.6}
+.bs-date{color:#c9a227;white-space:nowrap}
+.bs-open{background:linear-gradient(180deg,#e6c96a,#c9a227);color:#14264e;border:none;padding:11px 22px;font-family:Georgia,serif;font-size:13.5px;letter-spacing:.16em;cursor:pointer;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+.bs-open:hover{filter:brightness(1.07)}
+.brief-overlay{position:fixed;inset:0;z-index:120;background:rgba(4,10,24,.8);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;padding:4vh 10px;opacity:0;visibility:hidden;transition:opacity .22s ease,visibility .22s ease}
+.brief-overlay[hidden]{display:none}
+.brief-overlay.open{opacity:1;visibility:visible}
+.brief-frame{width:min(880px,94vw);background:#071022;border:1.5px solid #c9a227;outline:1px solid rgba(201,162,39,.55);outline-offset:4px;box-shadow:0 30px 80px rgba(0,0,0,.7);transform:translateY(12px);transition:transform .22s ease}
+.brief-overlay.open .brief-frame{transform:none}
+.brief-scroll{max-height:88vh;overflow-y:auto}
+.brief-closebar{position:sticky;top:0;z-index:6;display:flex;justify-content:flex-end;padding:10px 12px 0}
+.brief-close{background:#7a1f2b;color:#f7f1de;border:1px solid #c9a227;padding:7px 15px;font-family:Georgia,serif;font-size:12.5px;letter-spacing:.14em;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.brief-close:hover{background:#8d2735}
+.brief-frame .paper{margin:0;max-width:none;box-shadow:none}
+@media (max-width:640px){.brief-strip{flex-direction:column;align-items:stretch;text-align:center}.bs-open{width:100%}}
 `;
 function badgesHTML(it, lang) {
   let h = "";
@@ -1098,11 +1146,12 @@ function badgesHTML(it, lang) {
   return h;
 }
 function itemCard(it, lang) {
-  const search = (it.title + " " + (it.snippet || "") + " " + it.source).toLowerCase().replace(/"/g, "");
+  const snip = safeSummary(it.snippet);
+  const search = (it.title + " " + snip + " " + it.source).toLowerCase().replace(/"/g, "");
   return `<article class="item" data-region="${esc(it.region || "other")}" data-search="${esc(search)}">
 <div class="meta"><span class="src">${esc(it.source)}</span> · ${fmtTimeCST(it.ts)} · <span class="region">${esc(regionName(lang, it.region))}</span>${badgesHTML(it, lang)}</div>
 <h3><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a></h3>
-${it.snippet ? `<p>${esc(it.snippet)}</p>` : ""}
+${snip ? `<p>${esc(snip)}</p>` : ""}
 </article>`;
 }
 function marketCard(it, lang) {
@@ -1122,7 +1171,7 @@ function marketCard(it, lang) {
 function briefPaperHTML(b, lang) {
   const L = lang === "en" ? "en" : "zh";
   const colon = L === "en" ? ": " : "：";
-  const row = (it) => it ? `<li><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a> <span class="sum">— ${esc(it.source)} · ${fmtClockCST(it.ts)}</span><br><span class="sum">${esc(it.summary || "")}</span></li>` : `<li>${t(L, "none")}</li>`;
+  const row = (it) => it ? `<li><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a> <span class="sum">— ${esc(it.source)} · ${fmtClockCST(it.ts)}</span><br><span class="sum">${esc(safeSummary(it.summary))}</span></li>` : `<li>${t(L, "none")}</li>`;
   const regionRow = (key, it) => `<li><b>${regionName(L, key)}${colon}</b>${it ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a> <span class="sum">（${esc(it.source)}）</span>` : t(L, "none")}</li>`;
   const mktRow = (m) => {
     const prob = m.prob != null ? Math.round(m.prob * 100) + "%" : "—";
@@ -1139,7 +1188,7 @@ ${sealSVG("paper", 64)}
 <div><span class="stamp">${t(L, "stamp")}</span></div>
 </div>
 ${secHeadHTML(L, 0)}
-${b.headline ? `<p><b>${t(L, "leadLabel")}${colon}</b><a href="${esc(b.headline.url)}" target="_blank" rel="noopener">${esc(b.headline.title)}</a><br><span class="sum">${esc(b.headline.summary || "")}</span></p>` : `<p>${t(L, "noData")}</p>`}
+${b.headline ? `<p><b>${t(L, "leadLabel")}${colon}</b><a href="${esc(b.headline.url)}" target="_blank" rel="noopener">${esc(b.headline.title)}</a><br><span class="sum">${esc(safeSummary(b.headline.summary))}</span></p>` : `<p>${t(L, "noData")}</p>`}
 <ul>${(b.topStories || []).map(row).join("")}</ul>
 ${secHeadHTML(L, 1)}
 <ul>
@@ -1159,6 +1208,32 @@ ${secHeadHTML(L, 5)}
 <p>${(b.watch && b.watch.length ? b.watch : []).map((w) => `<span class="watch">${esc(w.name)} ↑${w.delta}${L === "en" ? ` (${w.count} items)` : `（${w.count} 条）`}</span>`).join("") || t(L, "watchEmpty")}</p>
 <div class="pfoot">${t(L, "paperFoot")}</div>
 </section>`;
+}
+// 简报档案入口条：替代原页面流中的纸面块——标题 + 日期 + 头条预告 + 开启按钮（点开弹窗）
+function briefStripHTML(b, lang) {
+  const L = lang === "en" ? "en" : "zh";
+  const top = (b.headline && b.headline.title) || (b.topStories && b.topStories[0] && b.topStories[0].title) || "";
+  const teaser = top ? (top.length > 60 ? top.slice(0, 60).trim() + "…" : top) : t(L, "stripEmpty");
+  return `<div class="brief-strip">
+<div class="bs-main">
+<div class="bs-title">📜 ${t(L, "paperTitle")} · ${t(L, "paperSub")}</div>
+<div class="bs-teaser">${esc(teaser)} <span class="bs-date">· ${fmtDateLong(L, Date.now())}</span></div>
+</div>
+<button class="bs-open" id="briefOpen" type="button">${t(L, "stripOpen")}</button>
+</div>`;
+}
+// 简报弹窗：纸面块整体移入 body 末尾的隐藏容器，金色双线框 + 内部滚动；
+// 关闭三路：右上「✕ 封存」钮（sticky）、点遮罩、Esc 键（见页面脚本）。
+function briefModalHTML(b, lang) {
+  const L = lang === "en" ? "en" : "zh";
+  return `<div class="brief-overlay" id="briefOverlay" hidden>
+<div class="brief-frame">
+<div class="brief-scroll">
+<div class="brief-closebar"><button class="brief-close" id="briefClose" type="button">${t(L, "stripClose")}</button></div>
+${briefPaperHTML(b, L)}
+</div>
+</div>
+</div>`;
 }
 
 const SOURCE_NAMES = (() => {
@@ -1209,13 +1284,16 @@ ${d.blurbKey ? `<p class="blurb">${t(L, d.blurbKey)}</p>` : ""}
   }).join("");
   const statusText = meta ? (meta.ok ? t(L, "statusOk") : t(L, "statusPartial")) : t(L, "statusNone");
   const colon = L === "en" ? ": " : "：";
-  const body = items.length ? `
-${hero ? `<div class="hero"><div class="kicker">${t(L, "leadKicker")}</div>
+  const heroSnip = hero ? safeSummary(hero.snippet) : "";
+  const heroHTML = hero ? `<div class="hero"><div class="kicker">${t(L, "leadKicker")}</div>
 <h2><a href="${esc(hero.url)}" target="_blank" rel="noopener">${esc(hero.title)}</a></h2>
 <div class="meta"><span class="src">${esc(hero.source)}</span> · ${fmtTimeCST(hero.ts)} · ${esc(regionName(L, hero.region))}${badgesHTML(hero, L)}</div>
-${hero.snippet ? `<p>${esc(hero.snippet)}</p>` : ""}</div>` : ""}
-${briefPaperHTML(brief, L)}
-${desksHTML}` : `<div class="empty">${t(L, "empty1")}<br>${t(L, "empty2")}</div>`;
+${heroSnip ? `<p>${esc(heroSnip)}</p>` : ""}</div>` : "";
+  // 纸面简报已移入弹窗（见 briefModalHTML）；页面流中只留入口条，空数据时同样展示（弹窗内为简报空状态）
+  const body = `
+${heroHTML}
+${briefStripHTML(brief, L)}
+${items.length ? desksHTML : `<div class="empty">${t(L, "empty1")}<br>${t(L, "empty2")}</div>`}`;
   return `<!DOCTYPE html>
 <html lang="${L === "en" ? "en" : "zh-CN"}">
 <head>
@@ -1248,7 +1326,7 @@ ${sealSVG("main", 118)}
 </span>
 </div>
 <nav class="navdesk">
-<a href="#brief">${t(L, "navBrief")}</a>${DESK_SECTIONS.map((d) => `<a href="#desk-${d.key}">${d.num} · ${L === "en" ? d.nameEn : d.name}</a>`).join("")}
+<a href="#brief" id="navBrief">${t(L, "navBrief")}</a>${DESK_SECTIONS.map((d) => `<a href="#desk-${d.key}">${d.num} · ${L === "en" ? d.nameEn : d.name}</a>`).join("")}
 </nav>
 <div class="health-title">${t(L, "healthHeading")}</div>
 <div class="health">${healthHTML}</div>
@@ -1258,6 +1336,7 @@ ${body}
 GLOBAL OSINT HUB · RULES-BASED AGGREGATION OF PUBLIC SOURCES · NOT AN OFFICIAL DOCUMENT</footer>
 </div>
 <button class="fab" id="fabBrief" type="button">${t(L, "fabBrief")}</button>
+${briefModalHTML(brief, L)}
 <script>
 var regionFilter = "all";
 function applyFilters() {
@@ -1277,10 +1356,30 @@ document.querySelectorAll("[data-region-filter]").forEach(function (chip) {
     applyFilters();
   });
 });
-document.getElementById("fabBrief").addEventListener("click", function () {
-  var el = document.getElementById("brief");
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-});
+var briefOverlay = document.getElementById("briefOverlay");
+var briefHideTimer = null;
+function openBrief() {
+  if (!briefOverlay) return;
+  if (briefHideTimer) { clearTimeout(briefHideTimer); briefHideTimer = null; }
+  briefOverlay.hidden = false;
+  requestAnimationFrame(function () { briefOverlay.classList.add("open"); });
+  document.documentElement.style.overflow = "hidden";
+}
+function closeBrief() {
+  if (!briefOverlay) return;
+  briefOverlay.classList.remove("open");
+  document.documentElement.style.overflow = "";
+  briefHideTimer = setTimeout(function () { briefOverlay.hidden = true; }, 200);
+}
+document.getElementById("fabBrief").addEventListener("click", openBrief);
+var briefOpenBtn = document.getElementById("briefOpen");
+if (briefOpenBtn) briefOpenBtn.addEventListener("click", openBrief);
+var briefCloseBtn = document.getElementById("briefClose");
+if (briefCloseBtn) briefCloseBtn.addEventListener("click", closeBrief);
+var navBriefLink = document.getElementById("navBrief");
+if (navBriefLink) navBriefLink.addEventListener("click", function (e) { e.preventDefault(); openBrief(); });
+if (briefOverlay) briefOverlay.addEventListener("click", function (e) { if (e.target === briefOverlay) closeBrief(); });
+document.addEventListener("keydown", function (e) { if (e.key === "Escape" && briefOverlay && !briefOverlay.hidden) closeBrief(); });
 document.getElementById("refreshBtn").addEventListener("click", function () {
   var btn = this, msg = document.getElementById("refreshMsg");
   btn.disabled = true; msg.textContent = ${JSON.stringify(t(L, "jsSweeping"))};
